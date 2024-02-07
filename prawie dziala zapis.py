@@ -22,6 +22,7 @@ priv_protocol_Aruba = usmDESPrivProtocol
 
 oid_ports = "1.3.6.1.2.1.17.7.1.4.5.1.1"
 oid_vlan_info = "1.3.6.1.2.1.17.7.1.4.3.1.2"
+port_membership_oid = "1.3.6.1.2.1.17.7.1.4.3.1.2"
 
 
 def get_vlan_list(ip_address, auth_user, auth_protocol, auth_password, priv_protocol, priv_password, oid):
@@ -60,44 +61,64 @@ def get_vlan_list(ip_address, auth_user, auth_protocol, auth_password, priv_prot
 
 
 
-def get_vlan_and_port_info(ip_address, auth_user, auth_protocol, auth_password, priv_protocol, priv_password, ports,
-                            vlan_info_oid):
-    vlan_ids = get_vlan_list(ip_address, auth_user, auth_protocol, auth_password, priv_protocol, priv_password,
-                             vlan_info_oid)
-    vlan_and_port_info = {}
+def get_vlan_and_port_info(ip_address, auth_user, auth_protocol, auth_password, priv_protocol, priv_password, vlan_ids,
+                           port_membership_oid):
+    user = UsmUserData(
+        auth_user,
+        auth_password,
+        priv_password,
+        auth_protocol,
+        priv_protocol
+    )
 
-    # Sprawdzenie, czy lista VLANów nie jest pusta lub None
     if not vlan_ids:
-        print("Brak dostępnych informacji o VLANach.")
-        return vlan_and_port_info  # Zwróć pustą listę
+        print("Lista numerów VLAN jest pusta. Zakończono działanie programu.")
+        return {}
 
-    for (error_indication, error_status, error_index, var_binds) in nextCmd(
-            SnmpEngine(),
-            UsmUserData(auth_user, auth_password, priv_password, auth_protocol, priv_protocol),
-            UdpTransportTarget((ip_address, 161)),
-            ContextData(),
-            ObjectType(ObjectIdentity(ports)),
-            lexicographicMode=False
-    ):
-        if error_indication:
-            print(f"Błąd: {error_indication}")
-            break
-        elif error_status:
-            print(f"Błąd: {error_status}")
-            break
-        else:
-            port_index = var_binds[0][0][-1]
-            vlan_ids_for_port = var_binds[0][1].prettyPrint().split()
-            port_vlans = []
-            for vlan_id in vlan_ids_for_port:
-                if int(vlan_id) in vlan_ids:
-                    port_vlans.append(vlan_id)
-            vlan_and_port_info[port_index] = {"VLANs": port_vlans}
+    result = {}  # Słownik do przechowywania informacji o przypisanych portach dla każdego VLAN-u
 
-            print(f"Przetwarzanie portu {port_index}: VLANy {port_vlans}")
+    for vlan_id in vlan_ids:
+        port_membership_oid_base = f"{port_membership_oid}.{vlan_id}"
+        print(port_membership_oid_base)
 
-    return vlan_and_port_info
+        port_list = []  # Lista portów przypisanych do danego VLAN-u
 
+        for (error_indication, error_status, error_index, var_binds) in getCmd(
+                SnmpEngine(),
+                user,
+                UdpTransportTarget((ip_address, 161)),
+                ContextData(),
+                ObjectType(ObjectIdentity(port_membership_oid_base)),
+                lexicographicMode=False
+        ):
+            if error_indication:
+                print(f"Error: {error_indication}")
+            elif error_status:
+                print(f"Error: {error_status}")
+            else:
+                for var_bind in var_binds:
+                    port_info = var_bind[1].prettyPrint()  # Pobierz informacje o przypisanych portach jako string
+                    port_list.extend(interpret_port_info(port_info))  # Dodaj zinterpretowane porty do listy
+                    print(port_list)
+        result[vlan_id] = port_list  # Dodaj listę portów do słownika dla danego VLAN-u
+
+    return result
+
+
+def interpret_port_info(port_info):
+    port_list = []
+    hex_string = port_info.split(':')[-1].strip()  # Usuń nagłówek i spacje, pozostaw tylko wartość heksadecymalną
+    bin_string = bin(int(hex_string, 16))[2:]  # Konwertuj wartość heksadecymalną na binarną, pomiń prefix '0b'
+
+    # Dopisz brakujące zera do uzupełnienia 64-bitowego ciągu binarnego
+    bin_string = bin_string.zfill(64)
+
+    # Interpretuj każdy bit w ciągu binarnym
+    for i in range(len(bin_string)):
+        if bin_string[i] == '1':
+            port_list.append(i + 1)  # Dodaj numer portu (numeracja od 1)
+
+    return port_list
 
 
 def get_devices_primary_ip_by_role(api_url, headers, role):
@@ -121,19 +142,15 @@ def get_devices_primary_ip_by_role(api_url, headers, role):
                     print("To nie aruba Ip: " + primary_ip_no_mask)
 
                     # Print VLAN list obtained from SNMP
-                    print("Available VLANs:", get_vlan_list(primary_ip_no_mask, auth_user, auth_protocol, auth_password,
-                                                            priv_protocol, priv_password, oid_vlan_info))
+                    vlan_list = get_vlan_list(primary_ip_no_mask, auth_user, auth_protocol, auth_password,
+                                              priv_protocol, priv_password, oid_vlan_info)
+                    print("Available VLANs:", vlan_list)
 
-                    informacje_vlanu_i_portu = get_vlan_and_port_info(primary_ip_no_mask, auth_user,
-                                                                      auth_protocol, auth_password,
-                                                                      priv_protocol, priv_password, oid_ports,
-                                                                      oid_vlan_info)
-                    print(informacje_vlanu_i_portu)
-                    for port, info in informacje_vlanu_i_portu.items():
-                        if 'VLANs' in info:
-                            print(f"Port {port}: VLAN {info['VLANs']}")
-                        else:
-                            print(f"Port {port}: VLAN None")  # Dodanie obsługi braku VLANu dla danego portu
+                    vlan_info = get_vlan_and_port_info(primary_ip_no_mask, auth_user, auth_protocol,
+                                                        auth_password, priv_protocol, priv_password, vlan_list, port_membership_oid)
+
+                    print(vlan_info)
+
 
                 else:
                     print("To aruba " + primary_ip_no_mask)
