@@ -109,7 +109,7 @@ def get_ports_with_vlans(ip_address, auth_user, auth_protocol, auth_password, pr
 
     # Sort the dictionary by keys (port numbers) to ensure sequential order
     port_vlan_map = dict(sorted(port_vlan_map.items()))
-
+    print(port_vlan_map)
 
     return port_vlan_map
 
@@ -172,18 +172,15 @@ def get_untagged_ports(ip_address, auth_user, auth_protocol, auth_password, priv
 
 def compare_and_print_port_info(ip_address, auth_user, auth_protocol, auth_password, priv_protocol, priv_password,
                                 vlan_ids, port_membership_oid_base, untagged_ports_oid_base):
-    # Pobierz mapę portów z przypisanymi VLANami
+
     port_vlan_map = get_ports_with_vlans(ip_address, auth_user, auth_protocol, auth_password, priv_protocol,
                                           priv_password, vlan_ids, port_membership_oid_base)
 
-    # Pobierz mapę nieoznaczonych portów dla VLANów
     untagged_ports_map = get_untagged_ports(ip_address, auth_user, auth_protocol, auth_password, priv_protocol,
                                              priv_password, vlan_ids, untagged_ports_oid_base)
 
-    # Utwórz pustą listę do przechowywania wyników
     results = []
 
-    # Dla każdego portu, sprawdź czy jest tagowany czy nie i dodaj odpowiedni wynik do listy
     for port_num in port_vlan_map:
         if port_num in untagged_ports_map:
             results.append((port_num, "nie tagowany", untagged_ports_map[port_num]))
@@ -191,6 +188,28 @@ def compare_and_print_port_info(ip_address, auth_user, auth_protocol, auth_passw
             results.append((port_num, "tagowany", port_vlan_map[port_num]))
 
     return results
+
+def get_interfaces_for_device(api_url, headers, device_name):
+    url_get_interfaces = f"{api_url}/dcim/interfaces/"
+    params = {"device": device_name, "limit": 100}
+
+    response = requests.get(url_get_interfaces, headers=headers, params=params, verify=False)
+    if response.status_code == 200:
+        interfaces = response.json().get('results', [])
+        interface_info = []
+
+        for interface in interfaces:
+            interface_name = interface.get('name')
+            interface_info.append(interface_name)
+
+        return interface_info
+    else:
+        print(f"Error retrieving interfaces for device {device_name}. Status Code: {response.status_code}")
+        print(response.text)
+        return []
+
+
+
 def get_devices_primary_ip_by_role(api_url, headers, role):
     url_get_devices_by_role = f"{api_url}/dcim/devices/"
     params = {"role": role}
@@ -203,13 +222,13 @@ def get_devices_primary_ip_by_role(api_url, headers, role):
         if devices:
             for device in devices:
                 manufacturer = device.get('device_type', {}).get('manufacturer', {}).get('name')
-
                 primary_ip_info = device.get('primary_ip', {})
+                display_name = device.get('display', {})
                 primary_ip = primary_ip_info.get('address') if primary_ip_info else ""
                 primary_ip_no_mask = primary_ip.split('/')[0]
 
                 if manufacturer != "Aruba":
-                    print("To nie aruba Ip: " + primary_ip_no_mask)
+                    print("To nie aruba Ip: " + primary_ip_no_mask +" "+ display_name)
 
                     vlan_list = get_vlan_list(primary_ip_no_mask, auth_user, auth_protocol, auth_password,
                                               priv_protocol, priv_password, oid_vlan_info)
@@ -220,8 +239,9 @@ def get_devices_primary_ip_by_role(api_url, headers, role):
                                                                      priv_password, vlan_list, port_membership_oid,
                                                                      untagged_ports_oid_base)
 
-                    for port_num, tag_status, vlans in comparison_results:
-                        print(f"Port {port_num}: {tag_status}, VLANy: {vlans}")
+                    interfaces = get_interfaces_for_device(api_url, headers, display_name)
+                    for (port_num, tag_status, vlans), interface in zip(comparison_results, interfaces):
+                        print(f"Port {port_num}: {tag_status}, VLANy: {vlans}, Interface: {interface}")
 
 
                 else:
@@ -232,5 +252,6 @@ def get_devices_primary_ip_by_role(api_url, headers, role):
     else:
         print(f"Error retrieving devices. Status Code: {response.status_code}")
         print(response.text)
+
 
 get_devices_primary_ip_by_role(api_url, headers, role_to_filter)
